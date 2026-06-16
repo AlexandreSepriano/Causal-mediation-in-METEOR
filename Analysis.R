@@ -13,20 +13,13 @@ library(haven)
 library(ltmle)
 library(dplyr)
 
-#########################################################################
-####################### Helper functions  ###############################
-#########################################################################
-
-setwd("C:/Users/alexa/OneDrive/work/Projects/Causal_axSpA/METEOR/Data/R Functions/")
-
-source("Functionsfinal.R", local = TRUE)
 
 #########################################################################
 ####################### Load the data  ##################################
 #########################################################################
 
 
-setwd("C:/Users/alexa/OneDrive/work/Projects/Causal_axSpA/METEOR/Data/Mediation Manuscript")
+setwd("your path")
 causalmediation <- read_dta("causalmediation.dta")
 
 
