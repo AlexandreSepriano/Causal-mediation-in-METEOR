@@ -1,38 +1,8 @@
 ******************************************************************************************************************************************************************
-**************************************************************** Create the wide dataset *************************************************************************
-******************************************************************************************************************************************************************
-
-/*
-global path C:\Users\alexa\OneDrive\Work\Projects\Causal_axSpA\METEOR\Data\Mediation manuscript\ 
-
-
-**************** Select variables and patients (Run run program first)
-
-global W="age sex comorbbin mny asasmri hla pertvt1 ibdbl emmtvt1 comedtvt1" // Condensed
-global Pb="asdastotal" 
-global P1="${Pb}t1"
-global P2="${Pb}t2"
-global D1="basfitotalt1"
-global group="$groupvars" 
-global completers="age sex comorbbin mny asasmri hla arthtvt1 arthtvt2 arthtvt3 enthtvt1 enthtvt2  enthtvt3  psotvt1 psotvt2 psotvt3 ibdbl aautvt1 aautvt2 aautvt3 nsaidnewt2 csdmardnewt2 gcnewt2" // asdastotal and basfitotal are complete by design
-global A="$treatvar" 
-global MOCa ="pertvt2"
-global MOCb ="emmtvt2"
-global MOCc ="comedtvt2"
-global Y="basfitotalt2"
-smdtable, selector($group) visit(6) analysis(table1) variable($completers)  treatvar($A) roundvar(1) roundsmd(2) difference(0.9) completers(yes) save(no) 
-keep if completers==1 
-keep id $W $A $MOCa $MOCb $MOCc $Y $P2 $P1 $D1
-
-save "${path}causalmediation.dta", replace 
-
-*/
-
-******************************************************************************************************************************************************************
 **************************************************************** CAUSAL Mediation Analysis in METEOR *************************************************************
 ******************************************************************************************************************************************************************
 
-global path C:\Users\alexa\OneDrive\Work\Projects\Causal_axSpA\METEOR\Data\Mediation manuscript\ 
+global path your path
 use "${path}causalmediation.dta", clear
 
 
