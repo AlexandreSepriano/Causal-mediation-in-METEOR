@@ -4,7 +4,7 @@ This repository accompanies the manuscript:
 
 **"Biological DMARDs improve function by suppressing inflammation in patients with axial spondyloarthritis: a causal mediation analysis in the METEOR registry."**
 
-The code provided here is intended **for educational and illustrative purposes only**. Its purpose is to help readers understand the intuition and computational steps behind the causal inference methods described in the manuscript and supplementary material.
+The code provided here is intended **for illustrative purposes only**. Its purpose is to help readers understand the intuition and computational steps behind the causal inference methods described in the manuscript and supplementary material.
 
 The scripts reproduce the illustrative algorithms presented in:
 
@@ -14,9 +14,9 @@ The scripts reproduce the illustrative algorithms presented in:
 * Supplementary Box S4: Marginal structural models (MSM)
 * Supplementary Box S5: Targeted maximum likelihood estimation (TMLE)
 
-These scripts are **not validated statistical software** and should **not be used as reference implementations for applied research or production analyses**.
+These scripts are **not validated statistical software** and should **not be used as reference implementations for applied research**.
 
-For actual analyses, readers should use established software implementations:
+For actual analyses, readers are referred to available software:
 
 * **Parametric g-formula and mediation analysis**
 
