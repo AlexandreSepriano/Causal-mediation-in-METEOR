@@ -14,7 +14,7 @@ The scripts reproduce the illustrative algorithms presented in:
 * Supplementary Box S4: Marginal structural models (MSM)
 * Supplementary Box S5: Targeted maximum likelihood estimation (TMLE)
 
-These scripts are **not validated statistical software** and should **not be used as reference implementations for applied research**.
+These scripts are **not validated statistical software** and should **not be used as implementations for applied research**.
 
 For actual analyses, readers are referred to available software:
 
