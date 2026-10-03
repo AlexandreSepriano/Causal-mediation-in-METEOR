@@ -1,0 +1,724 @@
+* smdtable version 2
+* Baseline / balance tables with standardised mean differences using Austin formula
+* Reference: Austin PC. Balance diagnostics for comparing the distribution of baseline covariates between treatment groups in propensity-score matched samples. Stat Med. 2009;28(25):3083-107.
+* Save as smdtableV2.ado in ado directory to run without calling
+
+capture program drop smdtableV2
+program define smdtableV2, rclass
+	version 15.0
+
+	syntax ,	selector(string)		///
+			visit(real)			///
+			analysis(string)		///
+			variable(string)		///
+			treatvar(varname)		///
+			roundvar(real)			///
+			roundsmd(real)			///
+			difference(real)		///
+			[					///
+			varcat(varlist)			///
+			iptw(varname)			///
+			folder(string)			///
+			filename(string)		///
+			save(string)			///
+			completers(string)		///
+			timevar(varname)		///
+			roundcont(integer -1)		///
+			roundpct(integer -1)		///
+			roundp(integer 3)		///
+			]
+
+	*-----------------------------------------------------------------
+	* 1. Validate options and set defaults
+	*-----------------------------------------------------------------
+	local analysis = lower(trim("`analysis'"))
+	if !inlist("`analysis'","table1","iptw") {
+		di as error "analysis() must be table1 or iptw"
+		exit 198
+	}
+	if "`analysis'"=="iptw" & "`iptw'"=="" {
+		di as error "analysis(iptw) requires iptw()"
+		exit 198
+	}
+
+	local savetable = lower(trim("`save'"))
+	if "`savetable'"=="" local savetable "no"
+	if !inlist("`savetable'","yes","no") {
+		di as error "save() must be yes or no"
+		exit 198
+	}
+
+	local completers = lower(trim("`completers'"))
+	if "`completers'"=="" local completers "no"
+	if !inlist("`completers'","yes","no") {
+		di as error "completers() must be yes or no"
+		exit 198
+	}
+
+	local roundvar = int(`roundvar')
+	local roundsmd = int(`roundsmd')
+	if `roundcont' < 0 local roundcont = `roundvar'
+	if `roundpct'  < 0 local roundpct  = `roundvar'
+
+	if `difference' > 1 {
+		di as text "{p 0 6 2}note: difference() is the |SMD| cut-off, not a number of"
+		di as text "decimals. With difference(`difference') no variable can be flagged as"
+		di as text "unbalanced. Conventional cut-offs are 0.1 to 0.25.{p_end}"
+		di ""
+	}
+
+	*--- output file -------------------------------------------------
+	local folder = subinstr("`folder'","\","/",.)
+	if substr("`folder'",-1,1)=="/" ///
+		local folder = substr("`folder'",1,length("`folder'")-1)
+
+	if "`filename'"=="" {
+		if "`analysis'"=="table1"	local filename "table1_`treatvar'_t`visit'"
+		else				local filename "TFmsm_`treatvar'_t`visit'"
+	}
+	local filename = subinstr("`filename'","\","/",.)
+	if lower(substr("`filename'",-5,5))==".xlsx" ///
+		local filename = substr("`filename'",1,length("`filename'")-5)
+	if lower(substr("`filename'",-4,4))==".xls" ///
+		local filename = substr("`filename'",1,length("`filename'")-4)
+
+	if strpos("`filename'","/") {
+		local outfile "`filename'.xlsx"
+	}
+	else {
+		if "`savetable'"=="yes" & "`folder'"=="" {
+			di as error "save(yes) requires folder(), or a full path in filename()"
+			exit 198
+		}
+		local outfile "`folder'/`filename'.xlsx"
+	}
+
+	*--- time variable: default t, but no longer hard-coded -----------
+	if "`timevar'"=="" {
+		capture confirm numeric variable t
+		if _rc {
+			di as error "no numeric variable t in the data: specify timevar()"
+			exit 111
+		}
+		local timevar t
+	}
+
+	*--- treatment variable must be 0/1 ------------------------------
+	qui levelsof `treatvar', local(tvals)
+	foreach tv of local tvals {
+		if !inlist(`tv',0,1) {
+			di as error "`treatvar' must be coded 0 (untreated) / 1 (treated)"
+			exit 198
+		}
+	}
+
+	*-----------------------------------------------------------------
+	* 2. Parse variable() into an ordered list, flagging categoricals
+	*    - i.varname inside variable() marks it categorical in place
+	*    - varcat() also marks a variable categorical; if that variable
+	*      is already in variable() it keeps its position, otherwise it
+	*      is appended at the end (version 2.0 behaviour)
+	*-----------------------------------------------------------------
+	local nv = 0
+	foreach item of local variable {
+		local iscat = 0
+		local stem "`item'"
+		if substr("`item'",1,2)=="i." {
+			local iscat = 1
+			local stem = substr("`item'",3,.)
+		}
+		unab stem : `stem'
+		foreach v of local stem {
+			local ++nv
+			local vname_`nv' "`v'"
+			local vcat_`nv'  = `iscat'
+		}
+	}
+
+	foreach v of local varcat {
+		local found = 0
+		forvalues i = 1/`nv' {
+			if "`vname_`i''"=="`v'" {
+				local vcat_`i' = 1
+				local found = 1
+			}
+		}
+		if !`found' {
+			local ++nv
+			local vname_`nv' "`v'"
+			local vcat_`nv'  = 1
+		}
+	}
+
+	if `nv'==0 {
+		di as error "variable() is empty"
+		exit 198
+	}
+
+	*--- checks: numeric, no duplicates ------------------------------
+	local allvars ""
+	forvalues i = 1/`nv' {
+		capture confirm numeric variable `vname_`i''
+		if _rc {
+			di as error "`vname_`i'' is not numeric"
+			exit 109
+		}
+		local j = 1
+		while `j' < `i' {
+			if "`vname_`i''"=="`vname_`j''" {
+				di as error "`vname_`i'' is listed more than once"
+				exit 198
+			}
+			local ++j
+		}
+		local allvars "`allvars' `vname_`i''"
+	}
+
+	*-----------------------------------------------------------------
+	* 3. Define the samples once (no hard-coded t, one denominator)
+	*-----------------------------------------------------------------
+	tempvar touse tousea
+	qui gen byte `touse' = 0
+	qui replace `touse' = 1 if `timevar'==`visit' & (`selector')
+	qui gen byte `tousea' = (`touse'==1 & !missing(`treatvar'))
+
+	qui count if `touse'
+	local Nsel = r(N)
+	qui count if `tousea'
+	local Nall = r(N)
+	if `Nall'==0 {
+		di as error "no observations with `timevar'==`visit', `selector' and non-missing `treatvar'"
+		exit 2000
+	}
+	qui count if `tousea' & `treatvar'==1
+	local N1 = r(N)
+	qui count if `tousea' & `treatvar'==0
+	local N0 = r(N)
+
+	if `Nsel' != `Nall' {
+		di as text "note: `=`Nsel'-`Nall'' selected observation(s) have missing `treatvar'"
+		di as text "      and are excluded from every column, including 'all'."
+		di ""
+	}
+
+	*-----------------------------------------------------------------
+	* 4. Column names for the two treatment groups
+	*-----------------------------------------------------------------
+	local g1 : label (`treatvar') 1
+	local g0 : label (`treatvar') 0
+	if "`g1'"=="1" | "`g1'"=="" local g1 "treated"
+	if "`g0'"=="0" | "`g0'"=="" local g0 "untreated"
+	local g1 = substr(strtoname("`g1'"),1,24)
+	local g0 = substr(strtoname("`g0'"),1,24)
+	foreach bad in variables all SMD P {
+		if "`g1'"=="`bad'" local g1 "`g1'_1"
+		if "`g0'"=="`bad'" local g0 "`g0'_0"
+	}
+	if "`g1'"=="`g0'" {
+		local g1 "`g1'_1"
+		local g0 "`g0'_0"
+	}
+
+	*-----------------------------------------------------------------
+	* 5. Completers (counted on the live data, no variable left behind)
+	*-----------------------------------------------------------------
+	if "`completers'"=="yes" {
+		tempvar cmp
+		qui gen byte `cmp' = `tousea'
+		foreach v of local allvars {
+			qui replace `cmp' = 0 if missing(`v') & `tousea'
+		}
+		qui count if `cmp'==1
+		local ncompleters = r(N)
+	}
+
+	tempvar ind
+	qui gen byte `ind' = .
+
+
+*=====================================================================
+* TABLE 1
+*=====================================================================
+if "`analysis'"=="table1" {
+
+	*--- row 1: N -------------------------------------------------
+	local k = 1
+	local c_lab_1  "N"
+	local c_all_1  "`Nall'"
+	local c_g1_1   "`N1'"
+	local c_g0_1   "`N0'"
+	local c_smd_1  ""
+	local c_p_1    ""
+	local smdname_1 ""
+	local smdval_1 = .
+
+	*--- one pass over variable(), in the order given --------------
+	forvalues q = 1/`nv' {
+	local v "`vname_`q''"
+
+	*=========== continuous / binary ==============================
+	if `vcat_`q''==0 {
+		local ++k
+		local smdname_`k' "`v'"
+
+		*--- is it binary? (0/1 only; a constant 0/1 is still binary)
+		qui sum `v' if `tousea'
+		local nobs = r(N)
+		local vmin = r(min)
+		local vmax = r(max)
+		local isbin = 0
+		if `nobs' > 0 {
+			qui count if `tousea' & !missing(`v') & `v'!=0 & `v'!=1
+			if r(N)==0 local isbin = 1
+			if !`isbin' & `vmin'<`vmax' {
+				qui count if `tousea' & !missing(`v') & `v'!=`vmin' & `v'!=`vmax'
+				if r(N)==0 {
+					di as text "note: `v' takes only two values (`vmin', `vmax') and is not"
+					di as text "      coded 0/1; it is summarised as mean (SD)."
+					di as text "      Use i.`v' in variable() if it is categorical."
+				}
+			}
+		}
+
+		*--- summaries by group
+		foreach grp in a g1 g0 {
+			if "`grp'"=="a"  local cond "`tousea'"
+			if "`grp'"=="g1" local cond "`tousea' & `treatvar'==1"
+			if "`grp'"=="g0" local cond "`tousea' & `treatvar'==0"
+			qui sum `v' if `cond'
+			local n_`grp'   = r(N)
+			local m_`grp'   = r(mean)
+			local s_`grp'   = r(sd)
+			local var_`grp' = cond(r(N)>1, r(Var), 0)
+			if `isbin' {
+				qui count if `cond' & `v'==1
+				local npos_`grp' = r(N)
+				local pct_`grp'  = cond(`n_`grp''>0, 100*`npos_`grp''/`n_`grp'', .)
+			}
+		}
+
+		*--- SMD (guarded against a zero / missing denominator)
+		local den = sqrt((`var_g1' + `var_g0')/2)
+		if `den' > 0 & `den' < .	local smd = (`m_g1' - `m_g0')/`den'
+		else				local smd = .
+		local smdval_`k' = `smd'
+
+		*--- p value (_rc checked so a failed test cannot leak r(p))
+		if `isbin' {
+			capture qui tabulate `treatvar' `v' if `tousea', chi2
+			if _rc==0	local p = r(p)
+			else		local p = .
+		}
+		else {
+			capture qui ttest `v' if `tousea', by(`treatvar')
+			if _rc==0	local p = r(p)
+			else		local p = .
+		}
+
+		*--- display cells
+		foreach grp in a g1 g0 {
+			if `n_`grp''==0 {
+				local cell_`grp' ""
+			}
+			else if `isbin' {
+				local aa : di %14.0f `npos_`grp''
+				local bb : di %14.`roundpct'f `pct_`grp''
+				local cell_`grp' = trim("`aa'") + " (" + trim("`bb'") + ")"
+			}
+			else {
+				local aa : di %14.`roundcont'f `m_`grp''
+				local bb : di %14.`roundcont'f `s_`grp''
+				local cell_`grp' = trim("`aa'") + " (" + trim("`bb'") + ")"
+			}
+		}
+		local c_lab_`k' = "`v' (n=" + string(`n_a') + ")"
+		local c_all_`k' "`cell_a'"
+		local c_g1_`k'  "`cell_g1'"
+		local c_g0_`k'  "`cell_g0'"
+
+		local ss : di %14.`roundsmd'f `smd'
+		local c_smd_`k' = cond(missing(`smd'), "", trim("`ss'"))
+
+		if missing(`p') {
+			local c_p_`k' ""
+		}
+		else if `p' < 10^(-`roundp') {
+			local c_p_`k' = "<" + string(10^(-`roundp'), "%12.`roundp'f")
+		}
+		else {
+			local pp : di %14.`roundp'f `p'
+			local c_p_`k' = trim("`pp'")
+		}
+	}
+
+	*=========== categorical ======================================
+	else {
+		*--- header row: variable label, N, overall chi2
+		local ++k
+		qui count if `tousea' & !missing(`v')
+		local ncatobs = r(N)
+		local vlab : variable label `v'
+		if "`vlab'"=="" local vlab "`v'"
+		local c_lab_`k' = "`vlab' (n=" + string(`ncatobs') + ")"
+		local c_all_`k' ""
+		local c_g1_`k'  ""
+		local c_g0_`k'  ""
+		local c_smd_`k' ""
+		local smdname_`k' ""
+		local smdval_`k' = .
+
+		capture qui tabulate `treatvar' `v' if `tousea', chi2
+		if _rc==0	local p = r(p)
+		else		local p = .
+		if missing(`p') {
+			local c_p_`k' ""
+		}
+		else if `p' < 10^(-`roundp') {
+			local c_p_`k' = "<" + string(10^(-`roundp'), "%12.`roundp'f")
+		}
+		else {
+			local pp : di %14.`roundp'f `p'
+			local c_p_`k' = trim("`pp'")
+		}
+
+		*--- one row per observed level
+		qui levelsof `v' if `tousea', local(codes)
+		foreach code of local codes {
+			local ++k
+			local lb : label (`v') `code'
+			local c_lab_`k' "   `lb'"
+			local smdname_`k' "`v'_`code'"
+
+			qui replace `ind' = .
+			qui replace `ind' = (`v'==`code') if `tousea' & !missing(`v')
+
+			foreach grp in a g1 g0 {
+				if "`grp'"=="a"  local cond "`tousea' & !missing(`v')"
+				if "`grp'"=="g1" local cond "`tousea' & !missing(`v') & `treatvar'==1"
+				if "`grp'"=="g0" local cond "`tousea' & !missing(`v') & `treatvar'==0"
+				qui sum `ind' if `cond'
+				local n_`grp'   = r(N)
+				local m_`grp'   = r(mean)
+				local var_`grp' = cond(r(N)>1, r(Var), 0)
+				qui count if `cond' & `ind'==1
+				local npos_`grp' = r(N)
+				local pct_`grp'  = cond(`n_`grp''>0, 100*`npos_`grp''/`n_`grp'', .)
+			}
+
+			local den = sqrt((`var_g1' + `var_g0')/2)
+			if `den' > 0 & `den' < .	local smd = (`m_g1' - `m_g0')/`den'
+			else				local smd = .
+			local smdval_`k' = `smd'
+
+			foreach grp in a g1 g0 {
+				if `n_`grp''==0 {
+					local cell_`grp' ""
+				}
+				else {
+					local aa : di %14.0f `npos_`grp''
+					local bb : di %14.`roundpct'f `pct_`grp''
+					local cell_`grp' = trim("`aa'") + " (" + trim("`bb'") + ")"
+				}
+			}
+			local c_all_`k' "`cell_a'"
+			local c_g1_`k'  "`cell_g1'"
+			local c_g0_`k'  "`cell_g0'"
+
+			local ss : di %14.`roundsmd'f `smd'
+			local c_smd_`k' = cond(missing(`smd'), "", trim("`ss'"))
+			local c_p_`k' ""
+		}
+	}
+	} // end forvalues q
+
+	local nrows = `k'
+
+	*--- build, display and export the table -----------------------
+	preserve
+	clear
+	qui set obs `nrows'
+	qui gen str100 variables = ""
+	qui gen str32  all       = ""
+	qui gen str32  `g1'      = ""
+	qui gen str32  `g0'      = ""
+	qui gen str16  SMD       = ""
+	qui gen str16  P         = ""
+
+	forvalues r = 1/`nrows' {
+		qui replace variables = "`c_lab_`r''" in `r'
+		qui replace all       = "`c_all_`r''" in `r'
+		qui replace `g1'      = "`c_g1_`r''"  in `r'
+		qui replace `g0'      = "`c_g0_`r''"  in `r'
+		qui replace SMD       = "`c_smd_`r''" in `r'
+		qui replace P         = "`c_p_`r''"   in `r'
+	}
+	format %-42s variables
+	format %-16s all `g1' `g0'
+	format %-10s SMD P
+
+	di ""
+	di as text "      Table: `g1' vs `g0' (`treatvar') at `timevar' = `visit'"
+	list variables all `g1' `g0' SMD P, table separator(0) abbreviate(24) noobs
+	di ""
+
+	if "`savetable'"=="yes" {
+		export excel using "`outfile'", replace firstrow(variables)
+		di as text "saved: `outfile'"
+	}
+	else {
+		di as text "table not saved (save(no))"
+	}
+	restore
+
+	*--- balance summary -------------------------------------------
+	di ""
+	di as result "Summary of balance: unbalanced if |SMD| >= `difference'"
+	di ""
+	local unbal ""
+	forvalues r = 1/`nrows' {
+		if "`smdname_`r''" != "" {
+			if abs(`smdval_`r'') >= `difference' & abs(`smdval_`r'') < . {
+				local unbal "`unbal' `smdname_`r''"
+			}
+		}
+	}
+	if "`unbal'" != "" {
+		di as text "Unbalanced variables: " as error "`unbal'"
+	}
+	else {
+		di as result "No unbalanced variables found."
+	}
+	di ""
+
+	if "`completers'"=="yes" {
+		di as result "Patients with complete data on all variables: `ncompleters' of `Nall'"
+		di ""
+	}
+
+	*--- returned results ------------------------------------------
+	local nsmd = 0
+	forvalues r = 1/`nrows' {
+		if "`smdname_`r''" != "" local ++nsmd
+	}
+	if `nsmd' > 0 {
+		tempname SM
+		matrix `SM' = J(`nsmd',1,.)
+		local rn ""
+		local q = 0
+		forvalues r = 1/`nrows' {
+			if "`smdname_`r''" != "" {
+				local ++q
+				matrix `SM'[`q',1] = `smdval_`r''
+				local nm = substr(strtoname("`smdname_`r''"),1,32)
+				local rn "`rn' `nm'"
+			}
+		}
+		matrix colnames `SM' = SMD
+		matrix rownames `SM' = `rn'
+		return matrix smd = `SM'
+	}
+	if "`savetable'"=="yes"  return local file "`outfile'"
+	if "`completers'"=="yes" return scalar completers = `ncompleters'
+	return scalar N0 = `N0'
+	return scalar N1 = `N1'
+	return scalar N  = `Nall'
+	return local unbalanced "`unbal'"
+	return local group0 "`g0'"
+	return local group1 "`g1'"
+
+} // end table1
+
+
+*=====================================================================
+* IPTW BALANCE TABLE
+*=====================================================================
+else {
+
+	tempvar tousew
+	qui gen byte `tousew' = (`tousea'==1 & !missing(`iptw'))
+	qui count if `tousew'
+	local Nw = r(N)
+	if `Nw'==0 {
+		di as error "no observations with a non-missing `iptw' in the selected sample"
+		exit 2000
+	}
+	qui count if `tousew' & `treatvar'==1
+	local uN1 = r(N)
+	qui count if `tousew' & `treatvar'==0
+	local uN0 = r(N)
+
+	* pseudo-population sizes: sum of the weights, NOT r(sum_w) after aweight
+	* (aweights are rescaled to sum to N, so r(sum_w) would just return N)
+	qui sum `iptw' if `tousew' & `treatvar'==1
+	local wN1 = r(sum)
+	qui sum `iptw' if `tousew' & `treatvar'==0
+	local wN0 = r(sum)
+	qui sum `iptw' if `tousew'
+	local mw  = r(mean)
+	local wN  = r(sum)
+
+	*--- rows, in the order given; one row per level of a categorical
+	local nr = 1
+	local rowname_1 "N_patients"
+	local rowvar_1  ""
+	local rowcode_1 ""
+	forvalues q = 1/`nv' {
+		if `vcat_`q''==0 {
+			local ++nr
+			local rowname_`nr' = substr(strtoname("`vname_`q''"),1,32)
+			local rowvar_`nr'  "`vname_`q''"
+			local rowcode_`nr' ""
+		}
+		else {
+			qui levelsof `vname_`q'' if `tousew', local(codes)
+			foreach code of local codes {
+				local ++nr
+				local rowname_`nr' = substr(strtoname("`vname_`q''_`code'"),1,32)
+				local rowvar_`nr'  "`vname_`q''"
+				local rowcode_`nr' "`code'"
+			}
+		}
+	}
+
+	local hyphens ""
+	forvalues i = 1/`=`nr'+2' {
+		local hyphens "`hyphens'-"
+	}
+
+	tempname M
+	matrix `M' = J(`nr',6,.)
+	matrix `M'[1,1] = `uN1'
+	matrix `M'[1,2] = `uN0'
+	matrix `M'[1,4] = round(`wN1')
+	matrix `M'[1,5] = round(`wN0')
+
+	forvalues i = 2/`nr' {
+		local v "`rowvar_`i''"
+		if "`rowcode_`i''"=="" {
+			local x "`v'"
+			local base "`tousew'"
+		}
+		else {
+			qui replace `ind' = .
+			qui replace `ind' = (`v'==`rowcode_`i'') if `tousew' & !missing(`v')
+			local x "`ind'"
+			local base "`tousew' & !missing(`v')"
+		}
+
+		qui sum `x' if `base' & `treatvar'==1
+		local m1 = r(mean)
+		local v1 = cond(r(N)>1, r(Var), 0)
+		qui sum `x' if `base' & `treatvar'==0
+		local m0 = r(mean)
+		local v0 = cond(r(N)>1, r(Var), 0)
+		local den = sqrt((`v1'+`v0')/2)
+		if `den' > 0 & `den' < .	local usmd = (`m1'-`m0')/`den'
+		else				local usmd = .
+
+		qui sum `x' if `base' & `treatvar'==1 [aw=`iptw']
+		local wm1 = r(mean)
+		local wv1 = cond(r(N)>1, r(Var), 0)
+		qui sum `x' if `base' & `treatvar'==0 [aw=`iptw']
+		local wm0 = r(mean)
+		local wv0 = cond(r(N)>1, r(Var), 0)
+		local wden = sqrt((`wv1'+`wv0')/2)
+		if `wden' > 0 & `wden' < .	local wsmd = (`wm1'-`wm0')/`wden'
+		else				local wsmd = .
+
+		local usmd_`i' = `usmd'
+		local wsmd_`i' = `wsmd'
+
+		matrix `M'[`i',1] = `m1'
+		matrix `M'[`i',2] = `m0'
+		matrix `M'[`i',3] = `usmd'
+		matrix `M'[`i',4] = `wm1'
+		matrix `M'[`i',5] = `wm0'
+		matrix `M'[`i',6] = `wsmd'
+	}
+
+	matrix colnames `M' = "Mean treated" "Mean untreated" "Unweighted SMD" ///
+	                      "Mean treated" "Mean untreated" "Weighted SMD"
+	local rn ""
+	forvalues i = 1/`nr' {
+		local rn "`rn' `rowname_`i''"
+	}
+	matrix rownames `M' = `rn'
+
+	local dw : di %6.3f `mw'
+	local dw = trim("`dw'")
+
+	di ""
+	di ""
+	matlist `M', cspec(& %28s | %9.`roundvar'f w15 & %9.`roundvar'f w15 & %9.`roundsmd'f w15 | %9.`roundvar'f w15 & %9.`roundvar'f w15 & %9.`roundsmd'f w15 &) ///
+		rspec(`hyphens') ///
+		title({bf} Table: `g1' vs `g0' (`treatvar') at `timevar' = `visit'; original population N=`Nw', pseudo population N=`=round(`wN')', mean weight=`dw')
+
+	if "`savetable'"=="yes" {
+		putexcel clear
+		putexcel set "`outfile'", sheet("Sheet1") replace
+		putexcel A1 = matrix(`M'), names
+		di as text "saved: `outfile'"
+	}
+	else {
+		di as text "table not saved (save(no))"
+	}
+
+	di ""
+	di as result "Summary of balance: unbalanced if |SMD| >= `difference'"
+	di ""
+	foreach w in u w {
+		local unbal_`w' ""
+		forvalues i = 2/`nr' {
+			if abs(``w'smd_`i'') >= `difference' & abs(``w'smd_`i'') < . {
+				local unbal_`w' "`unbal_`w'' `rowname_`i''"
+			}
+		}
+	}
+	if "`unbal_u'" != "" {
+		di as text "Unbalanced in the original population (unweighted): " as error "`unbal_u'"
+	}
+	else {
+		di as result "No unbalanced variables in the original population (unweighted)."
+	}
+	if "`unbal_w'" != "" {
+		di as text "Unbalanced in the pseudo population (weighted): " as error "`unbal_w'"
+	}
+	else {
+		di as result "No unbalanced variables in the pseudo population (weighted)."
+	}
+
+	di ""
+	di as text "................................................................................"
+	di as result "Note 1: analysis restricted to `Nw' of `Nall' selected patients with a non-missing `iptw'."
+	if `Nw' != `Nall' {
+		di as result "Note 2: `=`Nall'-`Nw'' patient(s) dropped - variables in the PS model have missing data."
+	}
+	di as text "................................................................................"
+	di ""
+	di as text "Pseudo population rescaled to the size of the original population (/ mean weight):"
+	di as result "  total          = `=round(`wN'/`mw')'" _col(40) "| original = `Nw'"
+	di as result "  `treatvar' = 1 = `=round(`wN1'/`mw')'" _col(40) "| original = `uN1'"
+	di as result "  `treatvar' = 0 = `=round(`wN0'/`mw')'" _col(40) "| original = `uN0'"
+	di ""
+
+	if "`completers'"=="yes" {
+		di as result "Patients with complete data on all variables: `ncompleters' of `Nall'"
+		di ""
+	}
+
+	tempname SMU SMW
+	matrix `SMU' = `M'[1...,3]
+	matrix `SMW' = `M'[1...,6]
+	if "`savetable'"=="yes" return local file "`outfile'"
+	return matrix wsmd = `SMW'
+	return matrix usmd = `SMU'
+	return matrix table = `M'
+	return scalar meanweight = `mw'
+	return scalar Nw = `Nw'
+	return scalar N  = `Nall'
+	return local unbalanced_weighted "`unbal_w'"
+	return local unbalanced "`unbal_u'"
+
+} // end iptw
+
+end
