@@ -28,7 +28,7 @@ The scripts reproduce the illustrative algorithms presented in:
 
 Before running, set the working folder at the top of each script (`C:\mypath\` in Stata, `C:/mypath/` in R). The scripts expect the subfolders `Datasets`, `Tables`, `Figures` and `Stata Programs` inside that folder.
 
-The METEOR data are not included in this repository. They are available upon reasonable request, as described in the data availability statement of the manuscript.
+The METEOR data are not included in this repository. 
 
 ## Software
 
@@ -57,9 +57,6 @@ For actual analyses, readers are referred to available software:
   * R: `ltmle`
   * Stata: `teffects aipw` (augmented inverse probability weighting, a doubly robust estimator closely related to TMLE)
 
-* **Tables and figures in R**
-
-  * `writexl` and `ggplot2`
 
 The methodological references, software references, and links to the original implementations are provided in the supplementary material (section "Main references for each method and program").
 
