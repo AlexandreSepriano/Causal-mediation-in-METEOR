@@ -14,7 +14,7 @@ macro drop _all  // Drops all macros
 * Working folders
 *===============================================================================
 
-global path     "C:\Users\alexa\OneDrive\Work\Projects\Causal_axSpA\METEOR\Data\Mediation manuscript\" // code
+global path     "C:\mypath\" // code
 global datasets "${path}Datasets\"  // the source csv file
 global programs "${path}Programs\"  // supporting programs
 global tables   "${path}Tables\"    // tables and exported results
