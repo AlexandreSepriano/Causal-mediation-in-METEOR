@@ -65,7 +65,7 @@ DEC   <- 2      # decimals for the estimates in the excel file
 DECD  <- 3      # decimals for the diagnostics and p-values
 PCUT  <- 0.20   # significance level for keeping an interaction
 
-PATH   <- "C:/Users/alexa/OneDrive/Work/Projects/Causal_axSpA/METEOR/Data/Mediation manuscript/"
+PATH   <- "C:/mypath/"
 DATA   <- paste0(PATH, "Datasets/")
 TABLES <- paste0(PATH, "Tables/")
 FIGURES <- paste0(PATH, "Figures/")
